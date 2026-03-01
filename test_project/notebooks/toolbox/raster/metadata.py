@@ -18,6 +18,9 @@ def get_dataset_info(dataset: gdal.Dataset) -> dict:
             - Origin (tuple/None): 仿射变换原点坐标 (x, y)。
             - Pixel Size (tuple/None): 像元分辨率 (dx, dy)。
     """
+    if not dataset:
+        raise ValueError("Provided dataset is None or invalid.")
+
     # 提取驱动与基本属性
     driver_info = f"{dataset.GetDriver().ShortName}/{dataset.GetDriver().LongName}"
     size = (dataset.RasterXSize, dataset.RasterYSize, dataset.RasterCount)
@@ -29,12 +32,11 @@ def get_dataset_info(dataset: gdal.Dataset) -> dict:
     pixel_size = (gt[1], gt[5]) if gt else None
 
     # 控制台输出 (用于调试)
-    print(f"Driver: {driver_info}")
-    print(f"Size: {size[0]} x {size[1]} x {size[2]}")
-    print(f"Projection: {proj}")
-    print(f"Pixel Size: {pixel_size}")
-    print(f"Origin: {origin}")
-
+    # print(f"Driver: {driver_info}")
+    # print(f"Size: {size[0]} x {size[1]} x {size[2]}")
+    # print(f"Projection: {proj}")
+    # print(f"Pixel Size: {pixel_size}")
+    # print(f"Origin: {origin}")
 
     return {
         'Driver': driver_info,
