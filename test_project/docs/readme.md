@@ -17,6 +17,10 @@ test_project/
 │   ├── test.ipynb         # 交互式测试代码
 │   ├── error_deal/        # 错误处理模块
 │   └── toolbox/           # 自定义工具箱
+│       ├── raster/        # 栅格数据处理模块
+│       │   ├── bands.py   # 波段合成与拆分操作
+│       │   └── metadata.py # 影像元数据提取
+│       └── utils.py       # 通用工具(如文件搜索)
 └── result/
     └── part1/             # 结果输出目录
 ```
