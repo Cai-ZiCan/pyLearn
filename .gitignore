@@ -1,0 +1,12 @@
+# Jupyter Notebook 自动生成的检查点文件夹 (必须排除)
+.ipynb_checkpoints/
+
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 遥感/地理数据文件 (防止大型 TIF 进入 Git)
+data/*.tif
+data/*.tiff
+data/*.img
