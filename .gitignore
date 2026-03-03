@@ -7,6 +7,4 @@ __pycache__/
 *$py.class
 
 # 遥感/地理数据文件 (防止大型 TIF 进入 Git)
-data/*.tif
-data/*.tiff
-data/*.img
+data/

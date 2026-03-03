@@ -134,3 +134,6 @@ dst_ds.GetRasterBand(1).WriteArray(numpy_array)
 # 4. 释放资源 (重要)
 dst_ds = None 
 ```
+
+### 3.8 多波段数据读取
+使用rasterio对多波段数据进行读取的时候，可以通过for in zip 进行读取
