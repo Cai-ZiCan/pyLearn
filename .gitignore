@@ -8,3 +8,6 @@ __pycache__/
 
 # 遥感/地理数据文件 (防止大型 TIF 进入 Git)
 data/
+
+# tensorboard 日志文件 (防止大型日志文件进入 Git)
+runs/

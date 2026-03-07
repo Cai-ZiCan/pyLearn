@@ -59,6 +59,15 @@ conda install -c conda-forge gdal geopandas pyproj shapely numpy pandas matplotl
   3. 点击右上角“选择内核”并选择 `pyGeoLearn` 环境。
   ![VS Code Kernel](image-2.png)
 
+### 2.5 pytorch与GIS环境 构建（Pytorch优先）
+反过来装（先 AI 后 GIS）：
+
+你先让 PyTorch 这种“挑剔”的大型框架在干净的环境里把 CUDA 和 MKL 这种重型基础设施铺好。
+
+此时环境的底层是“官方标准”。
+
+接着安装 GDAL。conda-forge 的包设计得非常灵活，它发现环境中已经存在了高性能的 MKL 和运行时，它会自动降低姿态，去链接和兼容已经存在的库，而不是强行拆迁。
+
 ## 3. 学习经验总结
 
 ### 3.1 Conda 源的选择
