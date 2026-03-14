@@ -1,7 +1,7 @@
 
 # 读取配置文件
 import json
-with open('D:\\pyLearn\\test_project\\notebooks\\config\\split_building_config.json', 'r') as f:
+with open('D:\\pyLearn\\pyLearn\\test_project\\notebooks\\config\\split_building_config.json', 'r') as f:
     config = json.load(f)
 train_data_path = config['data']['train_data_path']
 train_labels_path = config['data']['train_labels_path']
@@ -25,7 +25,7 @@ activation=config['model']['activation']
 type=config['model']['type']
 # 导入必要的库
 import os
-import tqdm
+from tqdm import tqdm
 from torch.utils.data import DataLoader
 
 # 1. 根据配置文件构建模型

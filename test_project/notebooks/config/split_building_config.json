@@ -1,16 +1,16 @@
 {
     "data": {
-            "batch_size": 16,
+            "batch_size": 32,
             "split": {
                 "train": 0.7,
                 "val": 0.15,
                 "test": 0.15
             },
             "split_methods": ["random", "stratified","10-fold"], 
-            "train_data_path": "D:\\pyLearn\\test_project\\data\\whu_cd\\train\\img",
-            "train_labels_path": "D:\\pyLearn\\test_project\\data\\whu_cd\\train\\label",
-            "test_data_path": "D:\\pyLearn\\test_project\\data\\whu_cd\\test\\img",
-            "test_labels_path": "D:\\pyLearn\\test_project\\data\\whu_cd\\test\\label"
+            "train_data_path": "D:\\pyLearn\\WHU_build\\split_data\\train\\image",
+            "train_labels_path": "D:\\pyLearn\\WHU_build\\split_data\\train\\label",
+            "test_data_path": "D:\\pyLearn\\WHU_build\\split_data\\test\\image",
+            "test_labels_path": "D:\\pyLearn\\WHU_build\\split_data\\test\\label"
         },
     "model": {
             "type": "Segformer",
@@ -21,9 +21,9 @@
             "activation": "softmax"
         },
     "train": {
-            "epochs": 20,
+            "epochs": 10,
             "learning_rate": 0.001,
-            "num_workers": 4,
+            "num_workers": 2,
             "loss_function": "DiceLoss",
             "optimizer": "adam"
         },
