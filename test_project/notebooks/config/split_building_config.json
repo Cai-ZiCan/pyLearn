@@ -1,0 +1,32 @@
+{
+    "data": {
+            "batch_size": 16,
+            "split": {
+                "train": 0.7,
+                "val": 0.15,
+                "test": 0.15
+            },
+            "split_methods": ["random", "stratified","10-fold"], 
+            "train_data_path": "D:\\pyLearn\\test_project\\data\\whu_cd\\train\\img",
+            "train_labels_path": "D:\\pyLearn\\test_project\\data\\whu_cd\\train\\label",
+            "test_data_path": "D:\\pyLearn\\test_project\\data\\whu_cd\\test\\img",
+            "test_labels_path": "D:\\pyLearn\\test_project\\data\\whu_cd\\test\\label"
+        },
+    "model": {
+            "type": "Segformer",
+            "encoder": "resnet50",
+            "encoder_weights": "imagenet",
+            "channels": 3,
+            "classes": 1,
+            "activation": "softmax"
+        },
+    "train": {
+            "epochs": 20,
+            "learning_rate": 0.001,
+            "loss_function": "DiceLoss",
+            "optimizer": "adam"
+        },
+    "test": {
+            "metrics": ["accuracy", "precision", "recall"]
+        }
+}
