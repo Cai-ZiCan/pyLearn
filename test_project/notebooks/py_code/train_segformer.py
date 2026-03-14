@@ -21,7 +21,8 @@ train_epochs=config['train']['epochs']
 train_learning_rate=config['train']['learning_rate']
 train_loss_function=config['train']['loss_function']
 train_optimizer=config['train']['optimizer']
-activation=config['model']['activation']
+activation_cfg = config['model']['activation']
+activation = activation_cfg
 weight_pth=config['train']['weight_pth']
 type=config['model']['type']
 # 导入必要的库
@@ -34,6 +35,12 @@ import segmentation_models_pytorch as smp
 
 # 统一 print 一下当前配置的模型类型，方便调试
 print(f"Model type from config: {type}")
+train_with_logits = train_loss_function in ['DiceLoss', 'CrossEntropyLoss']
+if train_with_logits:
+    # For training, keep raw logits and let the loss handle activation.
+    print(f"对于训练，使用原始Logits输出，损失函数将自动处理激活,\
+          设置的激活函数为: {activation}，仅在测试阶段应用")
+    activation = None
 if encoder_weights=="None":
     encoder_weights=None
 if type == 'Unet':
@@ -105,9 +112,16 @@ class building_dataset(Dataset):
         mask[mask > 0.5] = 1.0
         mask[mask <= 0.5] = 0.0
 
-        mask = torch.from_numpy(mask).long() 
+        if (train_loss_function == 'CrossEntropyLoss'):
+            # CrossEntropyLoss 需要 LongTensor 类型的标签，且标签值为类别索引（0, 1, ...）
+            mask = torch.from_numpy(mask).long()
+        elif (train_loss_function == 'DiceLoss'):
+            mask = torch.from_numpy(mask).float() # 转为float类型，适用于DiceLoss的binary模式
         
-        # 如果label有额外的维度（如[H, W, 1]）， squeeze掉通道维变成 [H, W]
+        # 如果mask有额外的通道维度（例如 [H, W, 1]），则squeeze掉变成 [H, W]
+        # 因为对于DiceLoss的binary模式，标签应该是 [B, H, W] 或 [B, 1, H, W]，而不是 [B, H, W, 1]
+        # 但是对于CrossEntropyLoss，标签应该是 [B, H, W]
+        # 后续根据损失函数的要求，再在训练函数中进行适当的unsqueeze（例如对DiceLoss的binary模式）
         if len(mask.shape) == 3:
             mask = mask.squeeze(-1)
 
@@ -117,6 +131,7 @@ class building_dataset(Dataset):
 # 1. 定义损失函数与迭代优化器
 import torch.optim as optim
 import torch.nn as nn
+import torch.nn.functional as F
 
 # 适合分割任务的损失函数，Dice损失（适用于二分类分割）
 # 若为多分类分割，可能需要使用CrossEntropyLoss或者结合DiceLoss和CrossEntropyLoss的混合损失函数
@@ -124,7 +139,7 @@ if train_loss_function == 'DiceLoss':
     # mode='binary' 需要输出 shape (B, 1, H, W)，所以需要将 mask 增加维度
     # Logits: (B, 1, H, W)
     # Target: (B, H, W) -> unsqueeze -> (B, 1, H, W)
-    criterion = smp.losses.DiceLoss(mode='binary', from_logits=True)  # 二分类分割，Segformer 直接输出 Logits
+    criterion = smp.losses.DiceLoss(mode='binary', from_logits=True)  # 二分类分割，使用原始Logits
 elif train_loss_function == 'CrossEntropyLoss':
     criterion = nn.CrossEntropyLoss()
 else:
@@ -143,10 +158,17 @@ else:
 def train(model,data_loader,criterion,optimizer,device):
     model.train()
     total_loss = 0
-    loop = tqdm(data_loader, desc=f"training", leave=False)
-    for batach_index,(images, labels, _) in enumerate(data_loader):
+    # loop是一个迭代器，使用tqdm包装后会显示进度条,
+    # 其实际上对于训练而言相当于data_loader的一个增强版本，提供了更友好的训练进度显示和实时更新的功能
+    # 故在使用for对data_loader进行迭代时，需要使用loop来替代原来的data_loader，才能使得loop生效显示进度条和相关信息
+    # 使用total显示指定训练数据的总数（以batch为单位，以确保可以对进度条进行计算更新），
+    # desc显示当前阶段（训练/测试），postfix显示当前batch的损失和显存占用
+    loop = tqdm(data_loader, total=len(data_loader), desc=f"training")
+    for batach_index,(images, labels, _) in enumerate(loop):
         images = images.to(device)
         labels = labels.to(device)
+        if train_loss_function == 'DiceLoss':
+            labels = labels.unsqueeze(1).float()
         
         optimizer.zero_grad()
         outputs = model(images)
@@ -156,13 +178,16 @@ def train(model,data_loader,criterion,optimizer,device):
         
         total_loss += loss.item()
         # 输出训练进度
+        
          # 获取当前显存占用 (单位: GB)
         if torch.cuda.is_available():
             mem_used = torch.cuda.memory_allocated() / 1024**3 
             mem_info = f'{mem_used:.2f}GB'
         else:
             mem_info = 'CPU'
-            
+        # 使用tqdm显示当前batch的损失和显存占用，以及训练进度
+        # 进度条会根据训练的进程自动更新，显示当前的batch索引和总batch数，以及当前batch的损失和显存占用
+        # 百分比和剩余时间会根据训练的速度自动计算和显示，帮助你更好地了解训练的进度和资源使用情况  
         loop.set_postfix(batch_loss=loss.item(), gpu_mem=mem_info)
         # 输出每50个batch的损失
         if (batach_index + 1) % 50 == 0:
@@ -175,16 +200,55 @@ def train(model,data_loader,criterion,optimizer,device):
 def test(model,data_loader,criterion,device):
     model.eval()
     total_loss = 0
+    total_tp = 0.0
+    total_fp = 0.0
+    total_fn = 0.0
+    # 定义一个内部函数，根据配置文件中的激活函数设置来应用相应的激活函数
+    def _apply_activation(outputs):
+        if activation_cfg is None or activation_cfg == "None":
+            if train_loss_function == 'DiceLoss':
+                return torch.sigmoid(outputs)
+            if train_loss_function == 'CrossEntropyLoss':
+                return torch.softmax(outputs, dim=1)
+            return outputs
+        if activation_cfg == 'sigmoid':
+            return torch.sigmoid(outputs)
+        if activation_cfg == 'softmax':
+            return torch.softmax(outputs, dim=1)
+        return outputs
     with torch.no_grad():
         for images, labels, _ in data_loader:
             images = images.to(device)
             labels = labels.to(device)
+            if train_loss_function == 'DiceLoss':
+                labels = labels.unsqueeze(1).float()
             
             outputs = model(images)
             loss = criterion(outputs, labels)
+            probs = _apply_activation(outputs)
+            if probs.dim() == 4 and probs.size(1) > 1:
+                # Multi-class logits -> use class-1 probability for binary mask
+                probs = probs[:, 1, :, :]
+            else:
+                probs = probs.squeeze(1)
+            preds = (probs > 0.5).float()
+            if labels.dim() == 4:
+                # 如果标签有额外的通道维度，squeeze掉变成 [B, H, W]
+                label_bin = labels.squeeze(1)
+            else:
+                label_bin = labels.float()
+
+            total_tp += torch.sum((preds == 1) & (label_bin == 1)).item()
+            total_fp += torch.sum((preds == 1) & (label_bin == 0)).item()
+            total_fn += torch.sum((preds == 0) & (label_bin == 1)).item()
             total_loss += loss.item()
     avg_loss = total_loss / len(data_loader)
+    eps = 1e-7
+    precision = total_tp / (total_tp + total_fp + eps)
+    recall = total_tp / (total_tp + total_fn + eps)
+    iou = total_tp / (total_tp + total_fp + total_fn + eps)
     print(f"Total Average testing loss: {avg_loss:.4f}")
+    print(f"Test IoU: {iou:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
 
 # 4. 训练模型
 # 这里的 train_data_path 应当遵照json中的配置，指向训练集的图像文件夹
