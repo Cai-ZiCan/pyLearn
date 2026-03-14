@@ -11,9 +11,11 @@ encoder=config['model']['encoder']
 encoder_weights=config['model']['encoder_weights']
 channels=config['model']['channels']
 classes=config['model']['classes'] 
-# 强制设置为1类（二分类：背景 vs 建筑），因为使用DiceLoss binary模式
-print(f"Forcing classes to {classes} for Binary Segmentation task with DiceLoss.")
+# 设置为1类（二分类：背景 vs 建筑），因为使用DiceLoss binary模式
 
+
+train_num_workers = config['train']['num_workers']
+test_num_workers = config['test']['num_workers']
 batch_size=config['data']['batch_size']
 train_epochs=config['train']['epochs']
 train_learning_rate=config['train']['learning_rate']
@@ -23,12 +25,16 @@ activation=config['model']['activation']
 type=config['model']['type']
 # 导入必要的库
 import os
+import tqdm
 from torch.utils.data import DataLoader
-
 
 # 1. 根据配置文件构建模型
 import segmentation_models_pytorch as smp
 
+# 统一 print 一下当前配置的模型类型，方便调试
+print(f"Model type from config: {type}")
+if encoder_weights=="None":
+    encoder_weights=None
 if type == 'Unet':
     model = smp.Unet(encoder_name=encoder, encoder_weights=encoder_weights, in_channels=channels, classes=classes, activation=activation)
 elif type == 'FPN':
@@ -51,7 +57,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-class building_dataset_train(Dataset):
+class building_dataset(Dataset):
     """
     自定义数据集类，用于读取WHU建筑分割数据集
     Args:
@@ -136,15 +142,10 @@ else:
 def train(model,data_loader,criterion,optimizer,device):
     model.train()
     total_loss = 0
+    loop = tqdm(data_loader, desc=f"training", leave=False)
     for batach_index,(images, labels, _) in enumerate(data_loader):
         images = images.to(device)
         labels = labels.to(device)
-        
-        # Segformer 输出为 [B, classes, H, W]
-        # 如果 classes=1，则 output 为 [B, 1, H, W]
-        # Label 为 [B, H, W]，此时需要 unsqueeze 使得 shape 为 [B, 1, H, W]
-        if labels.ndim == 3:
-            labels = labels.unsqueeze(1)
         
         optimizer.zero_grad()
         outputs = model(images)
@@ -154,13 +155,37 @@ def train(model,data_loader,criterion,optimizer,device):
         
         total_loss += loss.item()
         # 输出训练进度
+         # 获取当前显存占用 (单位: GB)
+        if torch.cuda.is_available():
+            mem_used = torch.cuda.memory_allocated() / 1024**3 
+            mem_info = f'{mem_used:.2f}GB'
+        else:
+            mem_info = 'CPU'
+            
+        loop.set_postfix(batch_loss=loss.item(), gpu_mem=mem_info)
+        # 输出每50个batch的损失
         if (batach_index + 1) % 50 == 0:
             print(f"Batch {batach_index + 1}/{len(data_loader)}, Loss: {loss.item():.4f}")
+        
     avg_loss = total_loss / len(data_loader)
     print(f"Total Average training loss: {avg_loss:.4f}")
 
+# 3. 定义测试函数（可选，后续可以在训练过程中或训练结束后调用）
+def test(model,data_loader,criterion,device):
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for images, labels, _ in data_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+            
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            total_loss += loss.item()
+    avg_loss = total_loss / len(data_loader)
+    print(f"Total Average testing loss: {avg_loss:.4f}")
 
-# 训练模型
+# 4. 训练模型
 # 这里的 train_data_path 应当遵照json中的配置，指向训练集的图像文件夹
 train_img_dir = train_data_path
 # train_labels_path 在配置文件中通常直接指向 label 文件夹
@@ -168,15 +193,13 @@ train_label_dir = train_labels_path
 data_transforms = transforms.Compose([
     transforms.ToTensor()
 ])
+    
 
-if __name__ == "__main__":
-    # 设置环境变量以离线运行 (一旦权重下载完成)
-    # 如果已经下载过权重，开启此选项可以跳过连接 Hugging Face，直接使用本地缓存
-   os.environ['HF_HUB_OFFLINE'] = '1' 
+def train_function():
    # 实例化 Dataset
-   train_dataset = building_dataset_train(train_img_dir, train_label_dir, transforms=data_transforms)
+   train_dataset = building_dataset(train_img_dir, train_label_dir, transforms=data_transforms)
    # 实例化 DataLoader
-   train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,num_workers=4)
+   train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,num_workers=train_num_workers)
    
    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
    model.to(device)
@@ -184,3 +207,30 @@ if __name__ == "__main__":
    for epoch in range(num_epochs):
        print(f"Epoch {epoch + 1}/{num_epochs}")
        train(model, train_loader, criterion, optimizer, device)
+    
+   # 训练完成后，可以保存模型权重
+   torch.save(model.state_dict(), 'segformer_building_segmentation.pth')
+
+# 5. 测试模型（可选）
+def test_function():
+    # 实例化 Dataset
+    test_dataset = building_dataset(test_data_path, test_labels_path, transforms=data_transforms)
+    # 实例化 DataLoader
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,num_workers=test_num_workers)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    
+    test(model, test_loader, criterion, device)
+
+if __name__ == "__main__":
+    # 设置环境变量以离线运行 (一旦权重下载完成)
+    os.environ['HF_HUB_OFFLINE'] = '1' 
+    selection = int(input("Enter 0 to start training, 1 to start testing: "))
+    if selection == 0:
+       print("Starting training...")
+       train_function()
+    # 训练完成后，可以调用测试函数评估模型性能
+    elif selection == 1:
+       print("Starting testing...") 
+       test_function()

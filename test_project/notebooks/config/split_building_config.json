@@ -23,10 +23,12 @@
     "train": {
             "epochs": 20,
             "learning_rate": 0.001,
+            "num_workers": 4,
             "loss_function": "DiceLoss",
             "optimizer": "adam"
         },
     "test": {
+            "num_workers": 2,   
             "metrics": ["accuracy", "precision", "recall"]
         }
 }
