@@ -23,12 +23,13 @@
     "train": {
             "epochs": 10,
             "learning_rate": 0.001,
-            "num_workers": 2,
+            "num_workers": 4,
             "loss_function": "DiceLoss",
-            "optimizer": "adam"
+            "optimizer": "adam",
+            "weight_pth": "D:\\pyLearn\\pyLearn\\test_project\\data\\weights\\segformer_resnet50_whuBuilding_split.pth"
         },
     "test": {
-            "num_workers": 2,   
+            "num_workers": 4,   
             "metrics": ["accuracy", "precision", "recall"]
         }
 }

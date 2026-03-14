@@ -22,6 +22,7 @@ train_learning_rate=config['train']['learning_rate']
 train_loss_function=config['train']['loss_function']
 train_optimizer=config['train']['optimizer']
 activation=config['model']['activation']
+weight_pth=config['train']['weight_pth']
 type=config['model']['type']
 # 导入必要的库
 import os
@@ -209,7 +210,8 @@ def train_function():
        train(model, train_loader, criterion, optimizer, device)
     
    # 训练完成后，可以保存模型权重
-   torch.save(model.state_dict(), 'segformer_building_segmentation.pth')
+   
+   torch.save(model.state_dict(), weight_pth)
 
 # 5. 测试模型（可选）
 def test_function():
@@ -217,7 +219,9 @@ def test_function():
     test_dataset = building_dataset(test_data_path, test_labels_path, transforms=data_transforms)
     # 实例化 DataLoader
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,num_workers=test_num_workers)
-    
+    # 加载训练好的模型权重
+    model.load_state_dict(torch.load(weight_pth))
+    # 将模型移动到GPU（如果可用）
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     
