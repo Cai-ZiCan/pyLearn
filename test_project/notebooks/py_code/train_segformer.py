@@ -13,9 +13,10 @@ channels=config['model']['channels']
 classes=config['model']['classes'] 
 # 设置为1类（二分类：背景 vs 建筑），因为使用DiceLoss binary模式
 
-
+# 此处为dataloader的num_workers cpu读取与预处理的并行数
 train_num_workers = config['train']['num_workers']
 test_num_workers = config['test']['num_workers']
+
 batch_size=config['data']['batch_size']
 train_epochs=config['train']['epochs']
 train_learning_rate=config['train']['learning_rate']
