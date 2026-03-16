@@ -265,6 +265,10 @@ def train_function():
    train_dataset = building_dataset(train_img_dir, train_label_dir, transforms=data_transforms)
    # 实例化 DataLoader
    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,num_workers=train_num_workers)
+   # 实例化 测试集 Dataset
+   test_dataset = building_dataset(test_data_path, test_labels_path, transforms=data_transforms)
+    # 实例化 DataLoader
+   test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,num_workers=test_num_workers)
    
    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
    model.to(device)
@@ -272,9 +276,9 @@ def train_function():
    for epoch in range(num_epochs):
        print(f"Epoch {epoch + 1}/{num_epochs}")
        train(model, train_loader, criterion, optimizer, device)
-    
+       test(model, test_loader, criterion, device)
+
    # 训练完成后，可以保存模型权重
-   
    torch.save(model.state_dict(), weight_pth)
 
 # 5. 测试模型（可选）
