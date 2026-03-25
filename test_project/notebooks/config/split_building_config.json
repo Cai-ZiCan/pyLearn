@@ -1,6 +1,10 @@
 {
     "data": {
             "batch_size": 32,
+            "data_size": {
+                "height": 512,
+                "width": 512
+            },
             "split": {
                 "train": 0.7,
                 "val": 0.15,
@@ -18,7 +22,7 @@
             "encoder_weights": "imagenet",
             "channels": 3,
             "classes": 1,
-            "activation": "Sigmoid"
+            "activation": "sigmoid"
         },
     "train": {
             "epochs": 50,

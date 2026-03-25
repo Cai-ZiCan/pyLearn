@@ -1,219 +1,154 @@
-## 评估 SegFormer 模型在哨兵2号数据上的分割效果
+# 使用训练好的模型权重，在大图中进行测试
 
-import os
+remote_data_path="D:\\pyLearn\\WHU_build\\split_data\\predict\\2016_train.tif"
 
-import torch
-import torch.nn.functional as F
-import segmentation_models_pytorch as smp
-import numpy as np
-import matplotlib.pyplot as plt
+# 读取模型配置
+# 包括模型类型、编码器、权重、输入通道数、类别数、激活函数等
+import json
+with open('D:\\pyLearn\\pyLearn\\test_project\\notebooks\\config\\split_building_config.json', 'r') as f:
+    config = json.load(f)
+
+type=config['model']['type'] # 模型类型，例如 "Unet", "FPN", "SegFormer" 等
+encoder=config['model']['encoder'] # 编码器名称，例如 "resnet34", "mit_b0" 等
+encoder_weights=config['model']['encoder_weights'] # 编码器权重，例如 "imagenet" 或 "None"（字符串形式）
+channels=config['model']['channels'] # 输入图像的通道数，通常为3（RGB）或4（RGBA），根据数据集实际情况设置
+classes=config['model']['classes'] # 输出类别数，对于二分类分割通常设置为1（背景 vs 目标），对于多分类分割则设置为类别总数
+activation_cfg = config['model']['activation'] # 激活函数配置，通常为 "sigmoid"（适用于二分类）或 "softmax"（适用于多分类），也可以设置为 "None" 或 None 来表示不使用激活函数（让损失函数处理）
+activation = activation_cfg # 训练过程中通常不直接在模型输出上应用激活函数，而是让损失函数（如DiceLoss或CrossEntropyLoss）处理原始Logits输出，因此这里的activation设置为None
+model_weight_pth=config['train']['weight_pth']
+train_width=config['data']['data_size']['width']
+train_height=config['data']['data_size']['height']
+train_loss_function=config['train']['loss_function'] # 训练时使用的损失函数，例如 "DiceLoss", "CrossEntropyLoss" 等，影响激活函数的选择
+
+# 读取原始大图数据
 from osgeo import gdal
+import torch
+import numpy as np
+import segmentation_models_pytorch as smp
+with gdal.Open(remote_data_path) as dataset:
+    # 读取图像数据
+    image_data = dataset.ReadAsArray()  # 形状通常为 (C, H, W)
+    image_shape = image_data.shape # 记录原始图像的形状，方便后续处理和调试
 
-def build_sentinel_model():
-    # 1. 配置设备 (适配你的 5060 Ti)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # 2. 定义 SMP 模型
-    # 针对哨兵2号 RGB 数据：in_channels=3
-    # 建筑物提取通常为二分类：classes=1 (使用 Sigmoid 激活)
+    # 将影像裁剪为训练数据的大小（例如512x512），
+    # 原始遥感图像较大，可以使用滑动窗口或其他方法进行裁剪，此处使用滑动窗口
+    # 重叠度设置为0.5，以减少最后识别结果中的边界效应
+    overlap = 0.5 # 重叠度
+    crop_size = (train_height, train_width) # 裁剪大小
+    # 根据指定重叠度和裁剪大小计算步长
+    step_size = (int(crop_size[0] * (1 - overlap)), int(crop_size[1] * (1 - overlap)))
+    # 计算裁剪的起始坐标列表
+    crop_coords = []
+    for y in range(0, image_shape[1] - crop_size[0] + 1, step_size[0]):
+        for x in range(0, image_shape[2] - crop_size[1] + 1, step_size[1]):
+            crop_coords.append((x, y))
+    # 如果最后的裁剪区域不足以覆盖整个图像，可以添加一个额外的空白裁剪区域来覆盖剩余部分
+    if crop_coords[-1][0] + crop_size[1] < image_shape[2]:
+        crop_coords.append((image_shape[2] - crop_size[1], crop_coords[-1][1]))
+    if crop_coords[-1][1] + crop_size[0] < image_shape[1]:
+        crop_coords.append((crop_coords[-1][0], image_shape[1] - crop_size[0]))
     
-    model = smp.Segformer(
-        encoder_name="efficientnet-b4",        # ResNet34 轻量且收敛快，适合初学者
-        encoder_weights=None,  # 使用预训练权重
-        
-        in_channels=3,                  
-        classes=4,                      
-        activation='sigmoid'            
-    )
+    # 将裁剪的图像块保存到列表中，方便后续进行模型预测
+    cropped_images = []
+    for x, y in crop_coords:
+        cropped_images.append(image_data[:, y:y+crop_size[0], x:x+crop_size[1]])
+    
 
-    # 加载本地预训练权重
-    local_weight_path = "/home/jujue/.cache/torch/hub/checkpoints/resnet34-333f7ec4.pth"
-    if os.path.exists(local_weight_path):
-        print(f"加载本地预训练权重: {local_weight_path}")
-        state_dict = torch.load(local_weight_path, map_location='cpu', weights_only=False)
-        model.encoder.load_state_dict(state_dict, strict=False)
-    else:
-        print(f"警告: 本地预训练权重未找到: {local_weight_path}. 模型将随机初始化。")
+    # 输出原始图像的形状，确认读取是否正确
+    print(f"Original image shape: {image_data.shape}")
 
-    # 加载权重后再移到目标设备
-    model = model.to(device)
-    return model, device
+    # 配置模型
+# 统一 print 一下当前配置的模型类型，方便调试
+print(f"Model type from config: {type}")
 
-def preprocess_sentinel(image_rgb):
-    """
-    针对哨兵2号数据的预处理：
-    哨兵数据通常是 uint16 (0-10000)，需要拉伸到 0-1 并转为 Float32
-    """
-    # 输入为 [C, H, W]，先转 float32 并归一化到 [0, 1]
-    max_val = float(np.max(image_rgb))
-    if max_val <= 0:
-        max_val = 1.0
-    img = np.clip(image_rgb.astype(np.float32) / max_val, 0, 1)
+if type == 'Unet':
+    model = smp.Unet(encoder_name=encoder, encoder_weights=encoder_weights, in_channels=channels, classes=classes, activation=activation)
+elif type == 'FPN':
+    model = smp.FPN(encoder_name=encoder, encoder_weights=encoder_weights, in_channels=channels, classes=classes, activation=activation)
+elif type == 'Linknet':
+    model = smp.Linknet(encoder_name=encoder, encoder_weights=encoder_weights, in_channels=channels, classes=classes, activation=activation)
+elif type == 'Segformer':
+    model = smp.Segformer(encoder_name=encoder, encoder_weights=encoder_weights, in_channels=channels, classes=classes, activation=activation)
+elif type == 'PSPNet':
+    model = smp.PSPNet(encoder_name=encoder, encoder_weights=encoder_weights, in_channels=channels, classes=classes, activation=activation)
+else:
+    raise ValueError(f"Unsupported model type: {type}")
 
-    # 2-98% 拉伸（逐通道，CHW）
-    for i in range(3):
-        ch = img[i, :, :]
-        p2, p98 = np.percentile(ch, (2, 98))
-        if p98 > p2:
-            ch = np.clip((ch - p2) / (p98 - p2), 0, 1)
-        img[i, :, :] = ch
+def _apply_activation(outputs):
+    if activation_cfg is None or activation_cfg == "None":
+        if train_loss_function == 'DiceLoss':
+            return torch.sigmoid(outputs)
+        if train_loss_function == 'CrossEntropyLoss':
+            return torch.softmax(outputs, dim=1)
+        return outputs
+    if activation_cfg == 'sigmoid':
+        return torch.sigmoid(outputs)
+    if activation_cfg == 'softmax':
+        return torch.softmax(outputs, dim=1)
+    return outputs
+# 加载训练好的模型权重
+model.load_state_dict(torch.load(model_weight_pth))
+# 将模型移动到GPU（如果可用）
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
 
-    # 返回 NCHW 的 float32 Tensor，便于直接送入 PyTorch 模型
-    return torch.from_numpy(img).unsqueeze(0).float()
+# 将影像整理为模型输入的格式，并进行预测
+import torch
+import torch.nn as nn
 
-
-def pad_tensor_to_multiple(input_tensor, multiple=32):
-    _, _, h, w = input_tensor.shape
-    new_h = (h // multiple + 1) * multiple if h % multiple != 0 else h
-    new_w = (w // multiple + 1) * multiple if w % multiple != 0 else w
-
-    pad_h = new_h - h
-    pad_w = new_w - w
-
-    padded_tensor = F.pad(input_tensor, (0, pad_w, 0, pad_h), mode="constant", value=0)
-    return padded_tensor, h, w
-
-
-def extract_and_stretch_rgb(source_rgb, valid_mask, lower=2, upper=98):
-    """先按掩膜提取目标区域，再对提取区域做百分位拉伸。"""
-    extracted = np.expand_dims(valid_mask, axis=2).repeat(3, axis=2) * source_rgb
-    stretched = extracted.copy()
-    valid_pixels = valid_mask > 0
-
-    if not np.any(valid_pixels):
-        return extracted, stretched
-
-    for channel_index in range(stretched.shape[2]):
-        channel = stretched[:, :, channel_index]
-        values = channel[valid_pixels]
-        p_low, p_high = np.percentile(values, (lower, upper))
-        if p_high > p_low:
-            channel[valid_pixels] = np.clip((values - p_low) / (p_high - p_low), 0, 1)
-        stretched[:, :, channel_index] = channel
-
-    return extracted, stretched
-
-
-def infer_tiled(model, device, rgb, tile_size=1024, overlap=128, threshold=0.5):
-    """使用分块推理避免一次性处理整幅大图导致显存溢出。"""
-    _, height, width = rgb.shape
-    stride = tile_size - overlap
-    if stride <= 0:
-        raise ValueError("tile_size 必须大于 overlap")
-
-    prob_sum = np.zeros((height, width), dtype=np.float32)
-    hit_count = np.zeros((height, width), dtype=np.float32)
-    use_amp = device.type == "cuda"
-
+# 对cropped_images中的每个图像块进行预测
+predictions = []
+# 对于每个裁剪的图像块，进行预处理并输入模型进行预测
+for idx, cropped_image in enumerate(cropped_images):
+    tensor_data=torch.from_numpy(cropped_image).float() # 转为float类型的Tensor，适用于模型输入
+    tensor_data = tensor_data.unsqueeze(0) # 添加batch维度，变为 [1, C, H, W]
+    tensor_data = tensor_data.to(device) # 将数据移动到GPU（如果可用）
     with torch.no_grad():
-        for y in range(0, height, stride):
-            y1 = min(y + tile_size, height)
-            y0 = max(0, y1 - tile_size)
-            for x in range(0, width, stride):
-                x1 = min(x + tile_size, width)
-                x0 = max(0, x1 - tile_size)
+        output = model(tensor_data) # 模型输出，形状通常为 [1, classes, H, W]
+        # 根据配置文件中的激活函数设置来应用相应的激活函数,获得概率图
+        probs = _apply_activation(output) 
+        # 对于二分类分割，通常会得到 [1, 1, H, W] 的概率图，表示每个像素属于建筑的概率
+        if probs.dim() == 4 and probs.size(1) > 1:
+            # Multi-class logits -> use class-1 probability for binary mask
+            probs = probs[:, 1, :, :]
+        else:
+            probs = probs.squeeze(1) # 如果是单通道输出，去掉通道维度，变为 [1, H, W]
+        
+        pred=(probs > 0.5).float() # 二分类分割的预测结果，形状为 [1, H, W]，值为0或1
+        predictions.append(pred.cpu().numpy()) # 将预测结果移动到CPU并转为numpy数组，方便后续处理
 
-                tile_rgb = rgb[:, y0:y1, x0:x1]
-                input_tensor = preprocess_sentinel(tile_rgb).to(device, non_blocking=True)
+# 将预测结果进行后处理，例如拼接成完整的分割图，保存为文件等
+# 拼接
+# 将所有预测块按坐标加权拼接（重叠区域取平均）
+full_pred_sum = np.zeros((image_shape[1], image_shape[2]), dtype=np.float32)
+full_pred_count = np.zeros((image_shape[1], image_shape[2]), dtype=np.float32)
 
-                with torch.amp.autocast(device_type="cuda", enabled=use_amp):
-                    pred = model(input_tensor).squeeze().float().cpu().numpy()
+for (x, y), pred in zip(crop_coords, predictions):
+    pred_patch = np.squeeze(pred).astype(np.float32)  # [H, W]
+    h, w = pred_patch.shape
+    full_pred_sum[y:y+h, x:x+w] += pred_patch
+    full_pred_count[y:y+h, x:x+w] += 1.0
 
-                prob_sum[y0:y1, x0:x1] += pred
-                hit_count[y0:y1, x0:x1] += 1.0
+# 避免除零
+full_pred_count[full_pred_count == 0] = 1.0
 
-                del input_tensor
-                if use_amp:
-                    torch.cuda.empty_cache()
+# 重叠区域平均后再二值化
+full_pred_prob = full_pred_sum / full_pred_count
+stitched_mask = (full_pred_prob > 0.5).astype(np.uint8)
 
-    prob_map = prob_sum / np.maximum(hit_count, 1.0)
-    return (prob_map > threshold).astype(np.uint8)
+print(f"Stitched mask shape: {stitched_mask.shape}")
+print(f"Foreground ratio: {stitched_mask.mean():.4f}")
 
-# --- 执行模拟测试 ---
-model, device = build_sentinel_model()
-model.eval()
+# 对于预测结果进行可视化，输出两幅影像，左侧为原始影像，右侧为预测的分割结果
+import matplotlib.pyplot as plt
+fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+# 原始影像（取RGB通道）
+axes[0].imshow(image_data[:3, :, :].transpose(1, 2, 0).astype(np.uint8)) # 转为 [H, W, C] 格式并显示
+axes[0].set_title("Original Image")
+# 预测的分割结果
+axes[1].imshow(stitched_mask, cmap='gray') # 显示二值分割结果
+axes[1].set_title("Predicted Segmentation Mask")
 
-gdal.UseExceptions()
-data_path=("/mnt/d/pyLearn/pyLearn/test_project/data/tif/"
-        "S2B_MSIL2A_20230611T030529_N0509_R075_T49RFL_20230611T053545_10m_4bands_croped.tif")
-with gdal.Open(data_path) as src:
-     band=src.ReadAsArray()
-
-
-rgb=band[[2,1,0],:,:] # 选择需要的波段，注意波段索引可能需要调整
-class_names = ["Class 0", "Class 1", "Class 2", "Class 3"]
-building_class_index = 0
-
-# # 使用分块推理，避免整图推理导致显存溢出
-# mask = infer_tiled(model, device, rgb, tile_size=1024, overlap=128, threshold=0.5)
-# 使用原始数据进行推理，适用于小图或显存充足的情况
-input_tensor = preprocess_sentinel(rgb)
-input_tensor, original_h, original_w = pad_tensor_to_multiple(input_tensor, multiple=32)
-input_tensor = input_tensor.to(device)
-
-
-with torch.no_grad():
-    prob_map = model(input_tensor).squeeze().float().cpu().numpy()
-prob_map = prob_map[:, :original_h, :original_w]
-class_map = np.argmax(prob_map, axis=0).astype(np.uint8)
-class_masks = [(class_map == class_index).astype(np.uint8) for class_index in range(len(class_names))]
-building_mask = class_masks[building_class_index]
-# mask=model(rgb.unsqueeze(0).float().to(device)).squeeze().float().cpu().numpy()
-rgb_img=preprocess_sentinel(rgb).squeeze().cpu().numpy().transpose(1, 2, 0)
-plt.imshow(class_map, cmap='tab10', vmin=0, vmax=len(class_names) - 1)
-plt.title("Predicted Class Map")
-plt.axis('off')
+# 保存可视化结果
+plt.savefig("D:\\pyLearn\\WHU_build\\split_data\\predict\\result\\segmentation_result.png")
 plt.show()
-
-fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-for class_index, axis in enumerate(axes.ravel()):
-    axis.imshow(class_masks[class_index], cmap='gray')
-    axis.set_title(class_names[class_index])
-    axis.axis('off')
-plt.tight_layout()
-plt.show()
-
-# 对四个类别分别做掩膜提取并拉伸显示
-extracted_per_class = []
-stretched_per_class = []
-for class_index, class_mask in enumerate(class_masks):
-    extracted, stretched = extract_and_stretch_rgb(
-        rgb_img,
-        class_mask,
-        lower=2,
-        upper=98,
-    )
-    extracted_per_class.append(extracted)
-    stretched_per_class.append(stretched)
-
-    non_zero_pixels = int(np.count_nonzero(class_mask))
-    total_pixels = int(class_mask.size)
-    coverage = (non_zero_pixels / total_pixels) * 100 if total_pixels > 0 else 0.0
-    print(f"{class_names[class_index]} 像素: {non_zero_pixels}/{total_pixels} ({coverage:.4f}%)")
-
-building = extracted_per_class[building_class_index]
-building_stretched = stretched_per_class[building_class_index]
-
-if np.count_nonzero(building_mask) == 0:
-    print("警告: Extracted Buildings 为全黑，当前类别没有检测到有效像素。")
-
-print(f"building 像素范围: min={building.min():.6f}, max={building.max():.6f}")
-
-# 同一窗口显示：原始图像 + 四个类别提取结果（拉伸后）
-fig, axes = plt.subplots(2, 3, figsize=(16, 10))
-axes_flat = axes.ravel()
-axes_flat[0].imshow(rgb_img)
-axes_flat[0].set_title("Input RGB Image")
-axes_flat[0].axis('off')
-
-for class_index in range(len(class_names)):
-    axes_flat[class_index + 1].imshow(stretched_per_class[class_index])
-    axes_flat[class_index + 1].set_title(f"{class_names[class_index]} Extracted")
-    axes_flat[class_index + 1].axis('off')
-
-axes_flat[-1].axis('off')
-plt.tight_layout()
-plt.show()
-
-print(f"分割完成！Class Map 尺寸: {class_map.shape}")

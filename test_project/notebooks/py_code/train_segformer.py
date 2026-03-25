@@ -226,7 +226,10 @@ def test(model,data_loader,criterion,device):
             
             outputs = model(images)
             loss = criterion(outputs, labels)
-            probs = _apply_activation(outputs)
+            # 输出经过激活函数处理后的概率图，
+            # 形状可能是 [B, 1, H, W] 或 [B, C, H, W]，取决于模型输出和激活函数设置
+            # 对于二分类分割，通常会得到 [B, 1, H, W] 的概率图，表示每个像素属于建筑的概率
+            probs = _apply_activation(outputs) 
             if probs.dim() == 4 and probs.size(1) > 1:
                 # Multi-class logits -> use class-1 probability for binary mask
                 probs = probs[:, 1, :, :]
